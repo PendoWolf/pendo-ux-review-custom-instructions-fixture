@@ -1,26 +1,77 @@
 import { useEffect, useState } from "react";
-import { api, type AppState } from "./api";
+import { api, ApiError, type AppState } from "./api";
+
+type Action = "load" | "increment" | "decrement" | "reset" | "refresh";
 
 // Seam for Pendo. Novus installs the Pendo agent, which provides window.pendo
 // at runtime; this fires a Track Event for each action. No-op when the agent
 // isn't present (local dev), so the app and Playwright mocks both stay simple.
-function trackEvent(name: string) {
+// Events: demo-load, demo-increment, demo-decrement, demo-reset and
+// demo-refresh after a successful call; demo-action-failed when one fails.
+function trackEvent(name: Action | "action-failed", props?: Record<string, unknown>) {
   if (typeof window !== "undefined") {
-    window.pendo?.track?.(`demo-${name}`);
+    try {
+      window.pendo?.track?.(`demo-${name}`, props);
+    } catch {
+      // Analytics must never break the app.
+    }
   }
+}
+
+// Success-event properties: the state the server returned, plus the counter the
+// user saw when they acted. load has no prior value and reset always lands on
+// 0, so each event sends only the fields that carry information.
+function successProps(action: Action, next: AppState, previousCounter: number) {
+  switch (action) {
+    case "load":
+      return { counter: next.counter, lastAction: next.lastAction };
+    case "increment":
+    case "decrement":
+      return { counter: next.counter, previousCounter };
+    case "reset":
+      return { previousCounter };
+    case "refresh":
+      return { counter: next.counter, lastAction: next.lastAction, previousCounter };
+  }
+}
+
+// demo-action-failed properties. errorMessage is capped to keep the payload
+// inside Pendo's 512-byte property limit; httpStatus exists only for non-2xx.
+function failureProps(action: Action, e: unknown) {
+  const err = e as Error;
+  return {
+    action,
+    errorMessage: err.message.slice(0, 200),
+    errorName: err.name,
+    httpStatus: err instanceof ApiError ? err.status : undefined,
+  };
+}
+
+// React StrictMode runs the mount effect twice in development; report the
+// initial load once. Module-level (not a ref) so it holds for the page's life.
+let initialLoadReported = false;
+
+function shouldReport(action: Action) {
+  if (action !== "load") return true;
+  if (initialLoadReported) return false;
+  initialLoadReported = true;
+  return true;
 }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ counter: 0, lastAction: "none" });
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (name: string, fn: () => Promise<AppState>) => {
+  const run = async (name: Action, fn: () => Promise<AppState>) => {
+    const previousCounter = state.counter;
     try {
       setError(null);
-      setState(await fn());
-      trackEvent(name);
+      const next = await fn();
+      setState(next);
+      if (shouldReport(name)) trackEvent(name, successProps(name, next, previousCounter));
     } catch (e) {
       setError((e as Error).message);
+      if (shouldReport(name)) trackEvent("action-failed", failureProps(name, e));
     }
   };
 

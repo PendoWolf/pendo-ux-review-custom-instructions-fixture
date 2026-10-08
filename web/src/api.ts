@@ -7,9 +7,20 @@ export interface AppState {
   lastAction: string;
 }
 
+// Thrown by call() for a non-2xx response so callers can read the HTTP status
+// (otherwise only embedded in the message). name stays the default "Error".
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function call(path: string, method: "GET" | "POST"): Promise<AppState> {
   const res = await fetch(`${BASE}${path}`, { method });
-  if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status}`);
+  if (!res.ok) throw new ApiError(`${method} ${path} failed: ${res.status}`, res.status);
   return res.json() as Promise<AppState>;
 }
 
